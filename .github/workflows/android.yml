@@ -1,0 +1,65 @@
+name: Build signed Android APK from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Extract, build and sign APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Unity project ZIP
+        id: project
+        shell: bash
+        run: |
+          shopt -s nullglob
+          archives=( *.zip )
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "Expected exactly one ZIP archive in the repository root; found ${#archives[@]}." >&2
+            exit 1
+          fi
+          mkdir -p extracted-project
+          unzip -q "${archives[0]}" -d extracted-project
+          version_file=$(find extracted-project -type f -path '*/ProjectSettings/ProjectVersion.txt' -print -quit)
+          if [ -z "$version_file" ]; then
+            echo "Could not find ProjectSettings/ProjectVersion.txt inside the ZIP." >&2
+            exit 1
+          fi
+          project_path="$(dirname "$(dirname "$version_file")")"
+          echo "path=$project_path" >> "$GITHUB_OUTPUT"
+          echo "Unity project found at: $project_path"
+
+      - name: Build and sign APK
+        uses: game-ci/unity-builder@v4
+        with:
+          projectPath: ${{ steps.project.outputs.path }}
+          targetPlatform: Android
+          buildMethod: MMA.Editor.AndroidBuild.PerformBuild
+          unityVersion: auto
+          androidExportType: androidPackage
+          androidKeystoreName: mma-release.keystore
+          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
+          androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
+          versioning: Custom
+          version: 0.1.${{ github.run_number }}
+          androidVersionCode: ${{ github.run_number }}
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMA-Fighting-APK
+          path: ${{ steps.project.outputs.path }}/build/Android/*.apk
+          if-no-files-found: error
+          retention-days: 14
