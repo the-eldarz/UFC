@@ -1,0 +1,145 @@
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "MMA_Fighting_Godot.zip"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages for Godot 4.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$SDK_PATH" ]; then
+            echo "Android SDK path was not provided by setup-android."
+            exit 1
+          fi
+          yes | sdkmanager --sdk_root="$SDK_PATH" --licenses >/dev/null
+          sdkmanager --sdk_root="$SDK_PATH" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
+          echo "ANDROID_SDK_PATH=$SDK_PATH" >> "$GITHUB_ENV"
+
+      - name: Download Godot 4.4.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/godot"
+          cd "$RUNNER_TEMP/godot"
+          wget -q \
+            "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip" \
+            -O godot.zip
+          unzip -q godot.zip
+          chmod +x Godot_v4.4.1-stable_linux.x86_64
+          echo "GODOT_BIN=$RUNNER_TEMP/godot/Godot_v4.4.1-stable_linux.x86_64" >> "$GITHUB_ENV"
+
+      - name: Install Godot 4.4.1 export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/godot-templates"
+          wget -q \
+            "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz" \
+            -O "$RUNNER_TEMP/godot-templates/templates.tpz"
+          unzip -q "$RUNNER_TEMP/godot-templates/templates.tpz" -d "$RUNNER_TEMP/godot-templates/unpacked"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.4.1.stable"
+          mkdir -p "$TEMPLATE_DIR"
+          if [ -d "$RUNNER_TEMP/godot-templates/unpacked/templates" ]; then
+            cp -a "$RUNNER_TEMP/godot-templates/unpacked/templates/." "$TEMPLATE_DIR/"
+          else
+            cp -a "$RUNNER_TEMP/godot-templates/unpacked/." "$TEMPLATE_DIR/"
+          fi
+          test -f "$TEMPLATE_DIR/android_debug.apk"
+          test -f "$TEMPLATE_DIR/android_release.apk"
+
+      - name: Extract project and repair preset formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f MMA_Fighting_Godot.zip
+          unzip -t MMA_Fighting_Godot.zip
+          mkdir -p "$GITHUB_WORKSPACE/project"
+          unzip -q MMA_Fighting_Godot.zip -d "$GITHUB_WORKSPACE/project"
+          PROJECT_DIR="$GITHUB_WORKSPACE/project/MMA_Fighting_Godot"
+          test -f "$PROJECT_DIR/project.godot"
+          test -f "$PROJECT_DIR/export_presets.cfg"
+          sed -i 's/^[[:space:]]\+dedicated_server=/dedicated_server=/' "$PROJECT_DIR/export_presets.cfg"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "===== Corrected Android export preset ====="
+          cat "$PROJECT_DIR/export_presets.cfg"
+
+      - name: Configure Android paths for Godot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF_SETTINGS
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/android_sdk_path = "$ANDROID_SDK_PATH"
+          EOF_SETTINGS
+          test -x "$JAVA_HOME/bin/java"
+          test -x "$ANDROID_SDK_PATH/platform-tools/adb"
+          java -version
+          "$ANDROID_SDK_PATH/platform-tools/adb" version
+
+      - name: Import project and initialize Godot settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --editor --path "$PROJECT_DIR" --quit 2>&1 | tee import.log
+
+      - name: Export debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROJECT_DIR/build"
+          "$GODOT_BIN" \
+            --headless \
+            --path "$PROJECT_DIR" \
+            --export-debug "Android" "$PROJECT_DIR/build/MMA-Fighting.apk" \
+            2>&1 | tee export.log
+          test -s "$PROJECT_DIR/build/MMA-Fighting.apk"
+          ls -lh "$PROJECT_DIR/build/MMA-Fighting.apk"
+
+      - name: Upload APK and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mma-android-build
+          path: |
+            project/MMA_Fighting_Godot/build/MMA-Fighting.apk
+            import.log
+            export.log
+          if-no-files-found: warn
