@@ -1,0 +1,141 @@
+
+name: Build MMA Android APK
+
+on:
+  push:
+    paths:
+      - 'MMA_Fighting_Godot.zip'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Godot Android APK
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Java and utilities
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+
+          export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
+          export ANDROID_HOME=$ANDROID_SDK_ROOT
+
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
+
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Download Godot 4.4.1
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$RUNNER_TEMP/godot"
+
+          wget -q \
+            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip \
+            -O "$RUNNER_TEMP/godot.zip"
+
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+
+          chmod +x "$RUNNER_TEMP/godot/Godot_v4.4.1-stable_linux.x86_64"
+
+      - name: Install Godot export templates
+        shell: bash
+        run: |
+          set -e
+
+          wget -q \
+            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz \
+            -O "$RUNNER_TEMP/templates.tpz"
+
+          mkdir -p "$RUNNER_TEMP/templates"
+          unzip -q "$RUNNER_TEMP/templates.tpz" -d "$RUNNER_TEMP/templates"
+
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.4.1.stable"
+
+          cp -a "$RUNNER_TEMP/templates/templates/." \
+            "$HOME/.local/share/godot/export_templates/4.4.1.stable/"
+
+      - name: Prepare project
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$RUNNER_TEMP/project"
+
+          unzip -q MMA_Fighting_Godot.zip -d "$RUNNER_TEMP/project"
+
+          PROJECT_FILE=$(find "$RUNNER_TEMP/project" -name project.godot -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: project.godot not found in ZIP"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
+
+      - name: Configure Android environment
+        shell: bash
+        run: |
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+
+          mkdir -p "$HOME/.android"
+
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Import Godot project
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/godot/Godot_v4.4.1-stable_linux.x86_64" \
+            --headless \
+            --editor \
+            --path "$PROJECT_DIR" \
+            --quit
+
+      - name: Export Android APK
+        shell: bash
+        run: |
+          set -e
+
+          "$RUNNER_TEMP/godot/Godot_v4.4.1-stable_linux.x86_64" \
+            --headless \
+            --path "$PROJECT_DIR" \
+            --export-debug "Android" \
+            "$RUNNER_TEMP/MMA-Fighting.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMA-Fighting-test-APK
+          path: ${{ runner.temp }}/MMA-Fighting.apk
+          if-no-files-found: error
+          retention-days: 14
