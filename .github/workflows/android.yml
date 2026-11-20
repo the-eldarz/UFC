@@ -1,0 +1,170 @@
+using System.Linq;
+using UnityEditor;
+using UnityEditor.Build.Reporting;
+using UnityEditor.SceneManagement;
+using UnityEditor.Android;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
+using UnityEngine.UI;
+using MMA;
+
+namespace MMA.Editor
+{
+    public static class AndroidBuild
+    {
+        private const string ScenePath = "Assets/Scenes/Arena.unity";
+
+        public static void PerformBuild()
+        {
+            CreateDemoScene();
+            PlayerSettings.companyName = "Indie MMA Studio";
+            PlayerSettings.productName = "MMA Fighting Prototype";
+            PlayerSettings.applicationIdentifier = "com.indie.mmafighting.prototype";
+            PlayerSettings.bundleVersion = "0.1.0";
+            PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
+            PlayerSettings.Android.useCustomKeystore = true;
+            PlayerSettings.defaultInterfaceOrientation = UIOrientation.LandscapeLeft;
+            PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
+            PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP);
+            EditorUserBuildSettings.buildAppBundle = false;
+
+            var projectRoot = System.IO.Directory.GetParent(Application.dataPath).FullName;
+            var outputDirectory = System.IO.Path.Combine(projectRoot, "build", "Android");
+            System.IO.Directory.CreateDirectory(outputDirectory);
+            var options = new BuildPlayerOptions
+            {
+                scenes = new[] { ScenePath },
+                locationPathName = System.IO.Path.Combine(outputDirectory, "MMA-Fighting.apk"),
+                target = BuildTarget.Android,
+                options = BuildOptions.None
+            };
+            BuildReport report = BuildPipeline.BuildPlayer(options);
+            if (report.summary.result != BuildResult.Succeeded)
+                throw new System.Exception("Android build failed: " + report.summary.result);
+            Debug.Log("APK created: " + options.locationPathName);
+        }
+
+        private static void CreateDemoScene()
+        {
+            System.IO.Directory.CreateDirectory("Assets/Scenes");
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            RenderSettings.ambientLight = new Color(0.42f, 0.44f, 0.48f);
+
+            var light = new GameObject("Arena Key Light");
+            var sun = light.AddComponent<Light>();
+            sun.type = LightType.Directional;
+            sun.intensity = 1.25f;
+            light.transform.rotation = Quaternion.Euler(48, -32, 0);
+
+            var floor = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            floor.name = "Octagon Mat";
+            floor.transform.position = new Vector3(0, -0.15f, 0);
+            floor.transform.localScale = new Vector3(9f, 0.15f, 9f);
+            floor.GetComponent<Renderer>().sharedMaterial = MakeMaterial(new Color(0.12f, 0.15f, 0.19f));
+
+            CreateFence();
+            var player = CreateFighter("Fighter A", new Vector3(-1.4f, 0, -0.5f), new Color(0.18f, 0.42f, 0.78f));
+            var rival = CreateFighter("Fighter B", new Vector3(1.4f, 0, 0.5f), new Color(0.72f, 0.22f, 0.18f));
+            player.opponent = rival.transform;
+            rival.opponent = player.transform;
+            rival.moveSpeed = 0f;
+
+            var cam = new GameObject("Dynamic Fight Camera").AddComponent<Camera>();
+            cam.tag = "MainCamera";
+            cam.fieldOfView = 52;
+            cam.gameObject.AddComponent<AudioListener>();
+            var rig = cam.gameObject.AddComponent<SimpleFightCamera>();
+            rig.targetA = player.transform;
+            rig.targetB = rival.transform;
+            cam.transform.position = new Vector3(0, 4.2f, -7.2f);
+            cam.transform.LookAt(new Vector3(0, 1, 0));
+
+            var eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+            CreateControls(player);
+            EditorSceneManager.SaveScene(scene, ScenePath);
+            EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
+        }
+
+        private static FighterController CreateFighter(string name, Vector3 position, Color color)
+        {
+            var root = new GameObject(name);
+            root.transform.position = position;
+            var cc = root.AddComponent<CharacterController>();
+            cc.height = 1.85f; cc.radius = 0.32f; cc.center = new Vector3(0, 0.93f, 0);
+            var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            body.name = "Body Placeholder";
+            body.transform.SetParent(root.transform, false);
+            body.transform.localPosition = new Vector3(0, 0.93f, 0);
+            body.transform.localScale = new Vector3(0.72f, 0.92f, 0.72f);
+            Object.DestroyImmediate(body.GetComponent<Collider>());
+            body.GetComponent<Renderer>().sharedMaterial = MakeMaterial(color);
+            var head = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            head.name = "Head Placeholder";
+            head.transform.SetParent(root.transform, false);
+            head.transform.localPosition = new Vector3(0, 1.72f, 0);
+            head.transform.localScale = Vector3.one * 0.34f;
+            Object.DestroyImmediate(head.GetComponent<Collider>());
+            head.GetComponent<Renderer>().sharedMaterial = MakeMaterial(new Color(0.72f, 0.52f, 0.38f));
+            return root.AddComponent<FighterController>();
+        }
+
+        private static void CreateFence()
+        {
+            var mat = MakeMaterial(new Color(0.08f, 0.09f, 0.11f));
+            for (int i = 0; i < 8; i++)
+            {
+                float a = i * Mathf.PI / 4f;
+                var post = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                post.name = "Fence Post";
+                post.transform.position = new Vector3(Mathf.Cos(a) * 4.1f, 1.25f, Mathf.Sin(a) * 4.1f);
+                post.transform.localScale = new Vector3(0.08f, 1.25f, 0.08f);
+                post.GetComponent<Renderer>().sharedMaterial = mat;
+            }
+        }
+
+        private static Material MakeMaterial(Color color)
+        {
+            var shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            var material = new Material(shader);
+            material.color = color;
+            return material;
+        }
+
+        private static void CreateControls(FighterController player)
+        {
+            var canvasObject = new GameObject("Touch Controls", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+            var canvas = canvasObject.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            var scaler = canvasObject.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+
+            var joy = CreatePanel(canvas.transform, "Joystick Base", new Vector2(0.13f, 0.2f), new Vector2(170, 170), new Color(1,1,1,0.16f));
+            var handle = CreatePanel(joy.transform, "Joystick Handle", new Vector2(0.5f,0.5f), new Vector2(72,72), new Color(1,1,1,0.6f));
+            var joystick = joy.AddComponent<VirtualJoystick>();
+            joystick.background = joy.GetComponent<RectTransform>();
+            joystick.handle = handle.GetComponent<RectTransform>();
+            joystick.target = player;
+            for (int i = 0; i < 4; i++)
+            {
+                var b = CreatePanel(canvas.transform, "Strike " + (i+1), new Vector2(0.78f + (i%2)*0.09f, 0.24f + (i/2)*0.18f), new Vector2(112,112), new Color(0.75f,0.18f,0.16f,0.78f));
+                var attack = b.AddComponent<AttackButton>(); attack.attackKind = i+1; attack.target = player;
+                var label = new GameObject("Label", typeof(Text)); label.transform.SetParent(b.transform, false);
+                var text = label.GetComponent<Text>(); text.text = new[] {"JAB", "CROSS", "KICK", "KNEE"}[i]; text.alignment = TextAnchor.MiddleCenter;
+                text.font = Resources.GetBuiltinResource<Font>("Arial.ttf"); text.fontSize = 20; text.color = Color.white;
+                var rt = label.GetComponent<RectTransform>(); rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one; rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+            }
+        }
+
+        private static GameObject CreatePanel(Transform parent, string name, Vector2 anchor, Vector2 size, Color color)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = anchor; rt.anchorMax = anchor; rt.pivot = new Vector2(0.5f,0.5f); rt.anchoredPosition = Vector2.zero; rt.sizeDelta = size;
+            go.GetComponent<Image>().color = color;
+            return go;
+        }
+    }
+}
